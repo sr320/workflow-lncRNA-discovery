@@ -1,12 +1,11 @@
 ---
-title: "lncRNA discovery"
-author: Steven Roberts
-date: "`r format(Sys.time(), '%d %B, %Y')`"
-format:
-  gfm:
-    toc: true
-    number-sections: true
+title: "lncRNA-discovery"
+format: html
+editor: visual
 ---
+
+
+# set variables
 
 
 ```{r}
@@ -15,37 +14,37 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Define key paths and tool directories
  
-DATA_DIR <- "../data/24-Apul-lncRNA-rediscovery"
-OUTPUT_DIR <- "../output/24-Apul-lncRNA-rediscovery"
-THREADS <- "42"
+DATA_DIR <- "../data/31-Apul-lncRNA-discovery"
+OUTPUT_DIR <- "../output/31-Apul-lncRNA-discovery"
+THREADS <- "48"
   
-FASTQ_SOURCE <- "https://gannet.fish.washington.edu/Atumefaciens/20230519-E5_coral-fastqc-fastp-multiqc-RNAseq/A_pulchra/trimmed/"
-FASTQ_SUFFIX <- "fastq.gz"
-GENOME_SOURCE <- "https://gannet.fish.washington.edu/seashell/snaps/GCF_013753865.1_Amil_v2.1_genomic.fna"
+FASTQ_SOURCE <- "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/D-Apul/output/01.00-D-Apul-RNAseq-trimming-fastp-FastQC-MultiQC/"
+FASTQ_SUFFIX <- "fq.gz"
+GENOME_SOURCE <- "https://gannet.fish.washington.edu/seashell/bu-github/deep-dive-expression/D-Apul/data/Apulcra-genome.fa"
 
 
-GTF_SOURCE <- "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/deep-dive/D-Apul/data/GCF_013753865.1_Amil_v2.1_genomic.gtf"
-GFF_SOURCE <- "https://gannet.fish.washington.edu/seashell/snaps/GCF_013753865.1_Amil_v2.1_genomic.gff"
+GTF_SOURCE <- "https://gannet.fish.washington.edu/seashell/bu-github/deep-dive-expression/D-Apul/data/Apulchra-genome.gtf"
+GFF_SOURCE <- "https://raw.githubusercontent.com/urol-e5/deep-dive-expression/refs/heads/main/D-Apul/data/Apulcra-genome.gff"
 
 GFFPATTERN <- 'class_code "u"|class_code "x"|class_code "o"|class_code "i"'
 
 #RAVEN
-HISAT2_DIR <- "/home/shared/hisat2-2.2.1/"
-SAMTOOLS_DIR <- "/home/shared/samtools-1.12/"
-STRINGTIE_DIR <- "/home/shared/stringtie-2.2.1.Linux_x86_64"
-GFFCOMPARE_DIR <- "/home/shared/gffcompare-0.12.6.Linux_x86_64"
-BEDTOOLS_DIR <- "/home/shared/bedtools2/bin"
-CPC2_DIR <- "/home/shared/CPC2_standalone-1.0.1"
-CONDA_PATH <- "/opt/anaconda/anaconda3/bin/conda"
+# HISAT2_DIR <- "/home/shared/hisat2-2.2.1/"
+# SAMTOOLS_DIR <- "/home/shared/samtools-1.12/"
+# STRINGTIE_DIR <- "/home/shared/stringtie-2.2.1.Linux_x86_64"
+# GFFCOMPARE_DIR <- "/home/shared/gffcompare-0.12.6.Linux_x86_64"
+# BEDTOOLS_DIR <- "/home/shared/bedtools2/bin"
+# CPC2_DIR <- "/home/shared/CPC2_standalone-1.0.1"
+# CONDA_PATH <- "/opt/anaconda/anaconda3/bin/conda"
 
 #KLONE
-# HISAT2_DIR <- ""
-# SAMTOOLS_DIR <- ""
-# STRINGTIE_DIR <- ""
-# GFFCOMPARE_DIR <- "/srlab/programs/gffcompare-0.12.6.Linux_x86_64/"
-# BEDTOOLS_DIR <- ""
-# CPC2_DIR <- "/srlab/programs/CPC2_standalone-1.0.1/bin/"
-# CONDA_PATH <- "/mmfs1/gscratch/srlab/nextflow/bin/miniforge/bin/conda"
+HISAT2_DIR <- ""
+SAMTOOLS_DIR <- ""
+STRINGTIE_DIR <- ""
+GFFCOMPARE_DIR <- "/srlab/programs/gffcompare-0.12.6.Linux_x86_64/"
+BEDTOOLS_DIR <- ""
+CPC2_DIR <- "/srlab/programs/CPC2_standalone-1.0.1/bin/"
+CONDA_PATH <- "/mmfs1/gscratch/srlab/nextflow/bin/miniforge/bin/conda"
 
 GENOME_FASTA <- file.path(DATA_DIR, "genome.fasta")
 GENOME_GTF <- file.path(DATA_DIR, "genome.gtf")
@@ -82,7 +81,6 @@ Sys.setenv(
 ```{r, engine='bash'}
 mkdir -p "${DATA_DIR}"
 mkdir -p "${OUTPUT_DIR}"
-mkdir -p "${FASTQ_DIR}"
 ```
 
 ```{r, engine='bash'}
@@ -288,20 +286,10 @@ head ${OUTPUT_DIR}/lncRNA_candidates.fasta
 
 #CPC2
 
-```{bash}
-wget https://github.com/gao-lab/CPC2_standalone/archive/refs/tags/v1.0.1.zip
-```
-
-```{bash}
-unzip v1.0.1.zip
-```
-
 ```{r, engine='bash'}
-eval "$(/mmfs1/gscratch/srlab/nextflow/bin/miniforge/bin/conda shell.bash hook)"
-conda activate /mmfs1/gscratch/srlab/nextflow/bin/miniforge/envs/nextflow  # replace with your actual env name
-python /mmfs1/gscratch/scrubbed/sr320/github/deep-dive-expression/F-Ptuh/code/CPC2_standalone-1.0.1/bin/CPC2.py \
-  -i "${OUTPUT_DIR}/lncRNA_candidates.fasta" \
-  -o "${OUTPUT_DIR}/CPC2"
+"${CPC2_DIR}CPC2.py" \
+-i "${OUTPUT_DIR}/lncRNA_candidates.fasta" \
+-o "${OUTPUT_DIR}/CPC2"
 ```
 
 Filter
@@ -350,7 +338,7 @@ while IFS= read -r line; do
     IFS='-' read -r start end <<< "$pos"
     
     # Convert the start position to 0-based by subtracting 1
-    start=$((start - 1))
+    #start=$((start - 0))
     
     # Write the chromosome, updated start, and end positions to the output file (tab-separated)
     printf "%s\t%s\t%s\n" "$chromosome" "$start" "$end"
@@ -427,5 +415,18 @@ END {
     }
 }
 ' "$tf_file"
+```
+
+
+
+# Common questions (negatives and dups)
+
+```{bash}
+grep -E '\s-+[0-9]+' "${OUTPUT_DIR}/lncRNA.gtf"
+```
+
+
+```{bash}
+sort "${OUTPUT_DIR}/lncRNA.gtf" | uniq -d | wc -l
 ```
 
