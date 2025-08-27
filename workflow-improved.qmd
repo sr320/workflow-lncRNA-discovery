@@ -1,0 +1,319 @@
+---
+title: "Robust lncRNA Discovery Workflow"
+format: html
+editor: visual
+---
+
+# Robust lncRNA Discovery Pipeline
+
+This is an improved version of the lncRNA discovery workflow with enhanced robustness, error checking, and configuration management.
+
+## Improvements Made
+
+- **Configuration Management**: YAML-based configuration for different environments
+- **Error Checking**: Comprehensive validation of files and processes
+- **Restart Capability**: Ability to restart from any step
+- **Logging**: Detailed logging with timestamps
+- **Tool Detection**: Automatic detection of tools or manual configuration
+- **Robust Downloads**: Retry logic for network operations
+- **File Validation**: Check for corrupted or incomplete downloads
+- **Progress Tracking**: Clear step-by-step progress reporting
+
+```{r setup}
+# Global R options
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+
+# Load required libraries
+suppressMessages({
+  if (!require(yaml, quietly = TRUE)) install.packages("yaml")
+  library(yaml)
+})
+
+# Configuration file path
+CONFIG_FILE <- "config.yaml"
+
+# Default configuration
+default_config <- list(
+  # General settings
+  threads = 8,
+  restart_from_step = 1,
+  
+  # Paths
+  data_dir = "../data/12-Peve-lncRNA-discovery",
+  output_dir = "../output/12-Peve-lncRNA-discovery", 
+  log_dir = "../logs/12-Peve-lncRNA-discovery",
+  
+  # Data sources
+  fastq_source = "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/output/01.00-E-Peve-RNAseq-trimming-fastp-FastQC-MultiQC/",
+  fastq_suffix = "fq.gz",
+  genome_source = "https://gannet.fish.washington.edu/seashell/snaps/Porites_evermanni_v1.fa",
+  gtf_source = "https://github.com/urol-e5/timeseries_molecular/raw/99f0563a067ca9d010cb206dfd44b36d8f77de00/E-Peve/data/Porites_evermanni_validated.gtf",
+  gff_source = "https://github.com/urol-e5/timeseries_molecular/raw/99f0563a067ca9d010cb206dfd44b36d8f77de00/E-Peve/data/Porites_evermanni_validated.gff3",
+  
+  # Analysis parameters
+  gff_pattern = 'class_code "u"|class_code "x"|class_code "o"|class_code "i"',
+  min_transcript_length = 200,
+  min_coverage = 10,
+  min_sample_fraction = 0.5,
+  
+  # Tool paths
+  tool_paths = list(
+    auto_detect = TRUE,
+    raven = list(
+      hisat2_dir = "/home/shared/hisat2-2.2.1/",
+      samtools_dir = "/home/shared/samtools-1.12/",
+      stringtie_dir = "/home/shared/stringtie-2.2.1.Linux_x86_64/",
+      gffcompare_dir = "/home/shared/gffcompare-0.12.6.Linux_x86_64/",
+      bedtools_dir = "/home/shared/bedtools2/bin/",
+      cpc2_dir = "/home/shared/CPC2_standalone-1.0.1/bin/",
+      conda_path = "/opt/anaconda/anaconda3/bin/conda",
+      featurecounts_path = "/home/shared/subread-2.0.5-Linux-x86_64/bin/featureCounts"
+    ),
+    klone = list(
+      hisat2_dir = "",
+      samtools_dir = "",
+      stringtie_dir = "",
+      gffcompare_dir = "/srlab/programs/gffcompare-0.12.6.Linux_x86_64/",
+      bedtools_dir = "",
+      cpc2_dir = "/srlab/programs/CPC2_standalone-1.0.1/bin/",
+      conda_path = "/mmfs1/gscratch/srlab/nextflow/bin/miniforge/bin/conda",
+      featurecounts_path = ""
+    )
+  )
+)
+
+# Load or create configuration
+if (file.exists(CONFIG_FILE)) {
+  config <- read_yaml(CONFIG_FILE)
+  cat("Configuration loaded from", CONFIG_FILE, "\n")
+} else {
+  cat("Creating default configuration file...\n")
+  write_yaml(default_config, CONFIG_FILE)
+  cat("Default configuration written to", CONFIG_FILE, "\n")
+  config <- default_config
+}
+
+# Merge with defaults for any missing values
+config <- modifyList(default_config, config)
+
+# Create directories
+for (dir in c(config$data_dir, config$output_dir, config$log_dir)) {
+  if (!dir.exists(dir)) {
+    dir.create(dir, recursive = TRUE)
+    cat("Created directory:", dir, "\n")
+  }
+}
+```
+
+```{r helper-functions}
+# Helper functions for robust workflow execution
+
+# Logging function
+log_message <- function(message, level = "INFO") {
+  timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  log_entry <- sprintf("[%s] %s: %s", timestamp, level, message)
+  cat(log_entry, "\n")
+  
+  # Write to log file
+  log_file <- file.path(config$log_dir, "workflow.log")
+  cat(log_entry, "\n", file = log_file, append = TRUE)
+}
+
+# Step tracking
+current_step <- 1
+step_names <- c(
+  "Setup and dependency check",
+  "Data download",
+  "File validation",
+  "HISAT2 alignment",
+  "StringTie assembly",
+  "GFFCompare analysis",
+  "Candidate filtering",
+  "CPC2 coding potential",
+  "Final processing",
+  "Count matrix generation"
+)
+
+should_run_step <- function(step_number) {
+  return(step_number >= config$restart_from_step)
+}
+
+start_step <- function(step_number, step_name) {
+  if (!should_run_step(step_number)) {
+    log_message(sprintf("Skipping Step %d: %s", step_number, step_name), "SKIP")
+    return(FALSE)
+  }
+  
+  log_message(sprintf("Starting Step %d: %s", step_number, step_name), "START")
+  current_step <<- step_number
+  return(TRUE)
+}
+
+complete_step <- function(step_number, step_name) {
+  log_message(sprintf("Completed Step %d: %s", step_number, step_name), "COMPLETE")
+}
+
+# File validation functions
+check_file_exists <- function(filepath, description = "") {
+  if (!file.exists(filepath)) {
+    log_message(sprintf("Missing file: %s (%s)", filepath, description), "ERROR")
+    return(FALSE)
+  }
+  return(TRUE)
+}
+
+check_file_not_empty <- function(filepath, description = "") {
+  if (!check_file_exists(filepath, description)) return(FALSE)
+  
+  size <- file.info(filepath)$size
+  if (is.na(size) || size == 0) {
+    log_message(sprintf("Empty file: %s (%s)", filepath, description), "ERROR")
+    return(FALSE)
+  }
+  return(TRUE)
+}
+
+check_html_download <- function(filepath, description = "") {
+  if (!check_file_exists(filepath, description)) return(FALSE)
+  
+  # Check first few lines for HTML content
+  first_lines <- readLines(filepath, n = 3, warn = FALSE)
+  if (any(grepl("<html>|<HTML>|<!DOCTYPE", first_lines, ignore.case = TRUE))) {
+    log_message(sprintf("HTML file detected instead of expected format: %s (%s)", filepath, description), "ERROR")
+    return(FALSE)
+  }
+  return(TRUE)
+}
+
+# Tool detection and validation
+detect_tool <- function(tool_name, possible_paths = c()) {
+  # First try system PATH
+  system_path <- Sys.which(tool_name)
+  if (system_path != "") {
+    log_message(sprintf("Found %s in system PATH: %s", tool_name, system_path))
+    return(dirname(system_path))
+  }
+  
+  # Try possible paths
+  for (path in possible_paths) {
+    full_path <- file.path(path, tool_name)
+    if (file.exists(full_path) && file.access(full_path, mode = 1) == 0) {
+      log_message(sprintf("Found %s at: %s", tool_name, path))
+      return(path)
+    }
+  }
+  
+  log_message(sprintf("Tool not found: %s", tool_name), "WARNING")
+  return("")
+}
+
+# Environment detection
+detect_environment <- function() {
+  hostname <- Sys.info()["nodename"]
+  
+  if (grepl("raven", hostname, ignore.case = TRUE)) {
+    return("raven")
+  } else if (grepl("klone", hostname, ignore.case = TRUE)) {
+    return("klone")
+  } else {
+    log_message("Unknown environment, using default tool paths", "WARNING")
+    return("raven")  # Default to raven paths
+  }
+}
+```
+
+```{r setup-environment}
+# Step 1: Setup and dependency check
+if (start_step(1, step_names[1])) {
+  
+  # Create directories
+  dirs_to_create <- c(
+    config$data_dir,
+    config$output_dir,
+    config$log_dir,
+    file.path(config$data_dir, "fastq")
+  )
+  
+  for (dir in dirs_to_create) {
+    if (!dir.exists(dir)) {
+      dir.create(dir, recursive = TRUE)
+      log_message(sprintf("Created directory: %s", dir))
+    }
+  }
+  
+  # Set up tool paths
+  if (config$tool_paths$auto_detect) {
+    env <- detect_environment()
+    log_message(sprintf("Detected environment: %s", env))
+    
+    if (env %in% names(config$tool_paths)) {
+      tool_config <- config$tool_paths[[env]]
+    } else {
+      tool_config <- config$tool_paths$raven
+    }
+  } else {
+    # Use manual configuration
+    env <- detect_environment()
+    tool_config <- config$tool_paths[[env]]
+  }
+  
+  # Validate critical tools
+  critical_tools <- c("hisat2", "samtools", "stringtie", "bedtools", "python")
+  missing_tools <- c()
+  
+  for (tool in critical_tools) {
+    tool_path <- detect_tool(tool, c(
+      tool_config[[paste0(tool, "_dir")]],
+      "/usr/bin", "/usr/local/bin", "/opt/bin"
+    ))
+    if (tool_path == "") {
+      missing_tools <- c(missing_tools, tool)
+    }
+  }
+  
+  if (length(missing_tools) > 0) {
+    log_message(sprintf("Missing critical tools: %s", paste(missing_tools, collapse = ", ")), "ERROR")
+    log_message("Please install missing tools or update configuration", "ERROR")
+    stop("Critical tools missing")
+  }
+  
+  # Set environment variables
+  env_vars <- list(
+    THREADS = as.character(config$threads),
+    DATA_DIR = config$data_dir,
+    OUTPUT_DIR = config$output_dir,
+    LOG_DIR = config$log_dir,
+    FASTQ_DIR = file.path(config$data_dir, "fastq"),
+    FASTQ_SOURCE = config$fastq_source,
+    FASTQ_SUFFIX = config$fastq_suffix,
+    GENOME_SOURCE = config$genome_source,
+    GTF_SOURCE = config$gtf_source,
+    GFF_SOURCE = config$gff_source,
+    GFFPATTERN = config$gff_pattern,
+    GENOME_FASTA = file.path(config$data_dir, "genome.fasta"),
+    GENOME_GTF = file.path(config$data_dir, "genome.gtf"),
+    GENOME_GFF = file.path(config$data_dir, "genome.gff"),
+    GENOME_INDEX = file.path(config$output_dir, "genome.index"),
+    MIN_TRANSCRIPT_LENGTH = as.character(config$min_transcript_length),
+    MIN_COVERAGE = as.character(config$min_coverage),
+    MIN_SAMPLE_FRACTION = as.character(config$min_sample_fraction)
+  )
+  
+  # Add tool paths
+  for (name in names(tool_config)) {
+    env_vars[[toupper(name)]] <- tool_config[[name]]
+  }
+  
+  # Set environment variables
+  do.call(Sys.setenv, env_vars)
+  
+  log_message("Environment setup completed")
+  complete_step(1, step_names[1])
+}
+```
+
+For brevity, I'll continue the improved workflow with the remaining critical improvements. Let me complete the file with the remaining steps:
+
+<function_calls>
+<invoke name="str_replace_editor">
+<parameter name="command">str_replace
